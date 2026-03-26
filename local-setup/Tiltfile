@@ -1,0 +1,312 @@
+# HCM Local Setup - Tilt Development Environment
+# ================================================
+# Usage:
+#   tilt up                    # Start all services (pre-built images)
+#   tilt up -- --local project # Start with 'project' built from source
+#
+# Hot-swap: Set LOCAL_BUILD entries to True to build from source
+# ================================================
+
+load('ext://dotenv', 'dotenv')
+dotenv()
+
+# ---------- Configuration ----------
+
+# Services that can be built locally (set True to build from source)
+LOCAL_BUILD = {
+    'health-project': False,
+    'household': False,
+    'health-individual': False,
+    'facility': False,
+    'product': False,
+    'stock': False,
+    'referralmanagement': False,
+    'plan-service': False,
+    'census-service': False,
+    'excel-ingestion': False,
+    'transformer': False,
+    'resource-generator': False,
+    'beneficiary-idgen': False,
+    'health-hrms': False,
+    'health-pgr-services': False,
+    'health-service-request': False,
+    'egov-survey-services': False,
+    'dashboard-analytics': False,
+    'project-factory': False,
+    'boundary-management': False,
+    'auth-proxy': False,
+}
+
+# Parse CLI args: tilt up -- --local project,household
+config.define_string('local', args=True)
+cfg = config.parse()
+local_services = cfg.get('local', '').split(',') if cfg.get('local', '') else []
+for svc in local_services:
+    svc = svc.strip()
+    if svc in LOCAL_BUILD:
+        LOCAL_BUILD[svc] = True
+        print('Local build enabled for: ' + svc)
+
+# CI mode detection
+CI_MODE = os.getenv('CI', '') != '' or os.getenv('TILT_CI', '') != ''
+
+# Path to HCM services source
+HCM_SERVICES_PATH = os.path.abspath('../health-campaign-services')
+
+# ---------- Docker Compose ----------
+
+docker_compose('./docker-compose.yml')
+
+# ---------- Infrastructure ----------
+
+dc_resource('postgres-db', labels=['infrastructure'])
+dc_resource('pgbouncer', labels=['infrastructure'],
+    resource_deps=['postgres-db'])
+dc_resource('redis', labels=['infrastructure'])
+dc_resource('redpanda', labels=['infrastructure'])
+dc_resource('minio', labels=['infrastructure'])
+
+# ---------- DIGIT Core Services ----------
+
+dc_resource('egov-mdms-service', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/mdms-v2/health', 'Health')])
+
+dc_resource('egov-enc-service', labels=['core'],
+    resource_deps=['pgbouncer'],
+    links=[link('http://localhost:18000/egov-enc-service/health', 'Health')])
+
+dc_resource('egov-idgen', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/egov-idgen/health', 'Health')])
+
+dc_resource('egov-user', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda', 'redis', 'egov-enc-service'],
+    links=[link('http://localhost:18000/user/health', 'Health')])
+
+dc_resource('egov-workflow-v2', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/egov-workflow-v2/health', 'Health')])
+
+dc_resource('egov-localization', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda', 'redis'],
+    links=[link('http://localhost:18000/localization/health', 'Health')])
+
+dc_resource('boundary-service', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/boundary-service/health', 'Health')])
+
+dc_resource('egov-accesscontrol', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/access/health', 'Health')])
+
+dc_resource('egov-persister', labels=['core'],
+    resource_deps=['pgbouncer', 'redpanda'],
+    links=[link('http://localhost:18000/common-persist/health', 'Health')])
+
+dc_resource('egov-filestore', labels=['core'],
+    resource_deps=['pgbouncer', 'minio'],
+    links=[link('http://localhost:18000/filestore/health', 'Health')])
+
+dc_resource('egov-url-shortening', labels=['core'],
+    resource_deps=['pgbouncer'])
+
+# ---------- HCM Services ----------
+
+dc_resource('health-project', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-user', 'egov-workflow-v2', 'egov-localization'],
+    links=[link('http://localhost:18000/health-project/health', 'Health')])
+
+dc_resource('household', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-user'],
+    links=[link('http://localhost:18000/household/health', 'Health')])
+
+dc_resource('health-individual', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-enc-service'],
+    links=[link('http://localhost:18000/health-individual/health', 'Health')])
+
+dc_resource('facility', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-user'],
+    links=[link('http://localhost:18000/facility/health', 'Health')])
+
+dc_resource('product', labels=['hcm'],
+    resource_deps=['egov-idgen'],
+    links=[link('http://localhost:18000/product/health', 'Health')])
+
+dc_resource('stock', labels=['hcm'],
+    resource_deps=['egov-idgen'],
+    links=[link('http://localhost:18000/stock/health', 'Health')])
+
+dc_resource('referralmanagement', labels=['hcm'],
+    resource_deps=['egov-idgen'],
+    links=[link('http://localhost:18000/referralmanagement/health', 'Health')])
+
+dc_resource('plan-service', labels=['hcm'],
+    resource_deps=['egov-mdms-service', 'egov-workflow-v2'],
+    links=[link('http://localhost:18000/plan-service/health', 'Health')])
+
+dc_resource('census-service', labels=['hcm'],
+    resource_deps=['egov-workflow-v2'],
+    links=[link('http://localhost:18000/census-service/health', 'Health')])
+
+dc_resource('excel-ingestion', labels=['hcm'],
+    resource_deps=['egov-filestore', 'egov-localization'],
+    links=[link('http://localhost:18000/excel-ingestion/health', 'Health')])
+
+dc_resource('transformer', labels=['hcm'],
+    resource_deps=['egov-mdms-service'],
+    links=[link('http://localhost:18000/transformer/health', 'Health')])
+
+dc_resource('resource-generator', labels=['hcm'],
+    resource_deps=['egov-mdms-service'],
+    links=[link('http://localhost:18000/resource-generator/health', 'Health')])
+
+dc_resource('beneficiary-idgen', labels=['hcm'],
+    resource_deps=['pgbouncer', 'redpanda', 'redis'],
+    links=[link('http://localhost:18000/beneficiary-idgen/health', 'Health')])
+
+dc_resource('health-hrms', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-user', 'egov-mdms-service'],
+    links=[link('http://localhost:18000/health-hrms/health', 'Health')])
+
+dc_resource('health-pgr-services', labels=['hcm'],
+    resource_deps=['egov-idgen', 'egov-user', 'egov-workflow-v2'],
+    links=[link('http://localhost:18000/pgr-services/health', 'Health')])
+
+dc_resource('health-service-request', labels=['hcm'],
+    resource_deps=['pgbouncer', 'redpanda'])
+
+dc_resource('egov-survey-services', labels=['hcm'],
+    resource_deps=['pgbouncer', 'redpanda'])
+
+dc_resource('dashboard-analytics', labels=['hcm'],
+    resource_deps=['pgbouncer'])
+
+dc_resource('project-factory', labels=['hcm'],
+    resource_deps=['health-project', 'egov-mdms-service'],
+    links=[link('http://localhost:18000/project-factory/health', 'Health')])
+
+dc_resource('boundary-management', labels=['hcm'],
+    resource_deps=['boundary-service', 'egov-mdms-service'],
+    links=[link('http://localhost:18000/boundary-management/health', 'Health')])
+
+dc_resource('auth-proxy', labels=['hcm'],
+    resource_deps=['egov-user'])
+
+# ---------- Gateway ----------
+
+dc_resource('kong', labels=['gateway'],
+    links=[
+        link('http://localhost:18000', 'Proxy'),
+        link('http://localhost:18001', 'Admin'),
+    ])
+
+# ---------- Seed Data ----------
+
+dc_resource('db-seed', labels=['infrastructure'],
+    resource_deps=['egov-mdms-service'])
+
+# ---------- Hot-swap: Local Build Support ----------
+
+# IMAGE_MAP maps service names to their docker-compose image refs (from .env)
+IMAGE_MAP = {
+    'health-project': os.getenv('PROJECT_IMAGE', ''),
+    'household': os.getenv('HOUSEHOLD_IMAGE', ''),
+    'health-individual': os.getenv('INDIVIDUAL_IMAGE', ''),
+    'facility': os.getenv('FACILITY_IMAGE', ''),
+    'product': os.getenv('PRODUCT_IMAGE', ''),
+    'stock': os.getenv('STOCK_IMAGE', ''),
+    'referralmanagement': os.getenv('REFERRAL_IMAGE', ''),
+    'plan-service': os.getenv('PLAN_SERVICE_IMAGE', ''),
+    'census-service': os.getenv('CENSUS_SERVICE_IMAGE', ''),
+    'excel-ingestion': os.getenv('EXCEL_INGESTION_IMAGE', ''),
+    'transformer': os.getenv('TRANSFORMER_IMAGE', ''),
+    'resource-generator': os.getenv('RESOURCE_GENERATOR_IMAGE', ''),
+    'beneficiary-idgen': os.getenv('BENEFICIARY_IDGEN_IMAGE', ''),
+    'health-hrms': os.getenv('HEALTH_HRMS_IMAGE', ''),
+    'health-pgr-services': os.getenv('HEALTH_PGR_IMAGE', ''),
+    'health-service-request': os.getenv('HEALTH_SERVICE_REQUEST_IMAGE', ''),
+    'egov-survey-services': os.getenv('SURVEY_SERVICES_IMAGE', ''),
+    'dashboard-analytics': os.getenv('DASHBOARD_ANALYTICS_IMAGE', ''),
+}
+
+def java_hot_swap(service_name, source_dir, context_path):
+    """Enable local build with live-reload for a Java Spring Boot service."""
+    if not LOCAL_BUILD.get(service_name, False):
+        return
+
+    image_ref = IMAGE_MAP.get(service_name, '')
+    if not image_ref:
+        print('WARNING: No image ref for ' + service_name + ', skipping hot-swap')
+        return
+
+    src_path = os.path.join(HCM_SERVICES_PATH, source_dir)
+
+    local_resource(
+        service_name + '-compile',
+        'cd ' + src_path + ' && mvn package -DskipTests -q && unzip -o target/*.jar -d target/extracted',
+        deps=[src_path + '/src', src_path + '/pom.xml'],
+        labels=['build'],
+    )
+
+    docker_build(
+        image_ref,
+        context=src_path + '/target/extracted',
+        dockerfile_contents="""
+FROM eclipse-temurin:17-jre-jammy
+WORKDIR /app
+COPY . .
+ENTRYPOINT ["java", "-cp", "BOOT-INF/classes:BOOT-INF/lib/*", "-Dserver.servlet.context-path=""" + context_path + """"]
+""",
+        live_update=[
+            sync(src_path + '/target/extracted/BOOT-INF/lib', '/app/BOOT-INF/lib'),
+            sync(src_path + '/target/extracted/BOOT-INF/classes', '/app/BOOT-INF/classes'),
+        ],
+    )
+
+# Register hot-swap for Java services
+java_hot_swap('health-project', 'health-services/project', '/health-project')
+java_hot_swap('household', 'health-services/household', '/household')
+java_hot_swap('health-individual', 'health-services/individual', '/health-individual')
+java_hot_swap('facility', 'health-services/facility', '/facility')
+java_hot_swap('product', 'health-services/product', '/product')
+java_hot_swap('stock', 'health-services/stock', '/stock')
+java_hot_swap('referralmanagement', 'health-services/referralmanagement', '/referralmanagement')
+java_hot_swap('plan-service', 'health-services/plan-service', '/plan-service')
+java_hot_swap('census-service', 'health-services/census-service', '/census-service')
+java_hot_swap('excel-ingestion', 'health-services/excel-ingestion', '/excel-ingestion')
+java_hot_swap('transformer', 'health-services/transformer', '/transformer')
+java_hot_swap('resource-generator', 'health-services/resource-generator', '/resource-generator')
+java_hot_swap('beneficiary-idgen', 'core-services/beneficiary-idgen', '/beneficiary-idgen')
+java_hot_swap('health-hrms', 'core-services/egov-hrms', '/health-hrms')
+java_hot_swap('health-pgr-services', 'core-services/pgr-services', '/pgr-services')
+java_hot_swap('health-service-request', 'core-services/service-request', '/service-request')
+java_hot_swap('egov-survey-services', 'core-services/egov-survey-services', '/egov-survey-services')
+java_hot_swap('dashboard-analytics', 'core-services/dashboard-analytics', '/dashboard-analytics')
+
+# ---------- Custom Buttons ----------
+
+cmd_button(
+    name='health-check',
+    argv=['./scripts/health-check.sh'],
+    location=location.NAV,
+    icon_name='favorite',
+    text='Health Check',
+)
+
+cmd_button(
+    name='smoke-tests',
+    argv=['./scripts/smoke-tests.sh'],
+    location=location.NAV,
+    icon_name='science',
+    text='Smoke Tests',
+)
+
+cmd_button(
+    name='nuke-db',
+    argv=['sh', '-c', 'docker compose down -v && docker compose up -d postgres-db'],
+    location=location.NAV,
+    icon_name='delete_forever',
+    text='Nuke DB',
+    requires_confirmation=True,
+)

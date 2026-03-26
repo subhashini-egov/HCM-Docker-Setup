@@ -1,0 +1,37 @@
+# HCM Local Setup - Quick Start (pre-built images only)
+# =====================================================
+# Usage: tilt up -f Tiltfile.db-dump
+# No build tools (Maven, Node.js) required.
+# =====================================================
+
+load('ext://dotenv', 'dotenv')
+dotenv()
+
+docker_compose('./docker-compose.yml')
+
+# --- Infrastructure ---
+dc_resource('postgres-db', labels=['infrastructure'])
+dc_resource('pgbouncer', labels=['infrastructure'], resource_deps=['postgres-db'])
+dc_resource('redis', labels=['infrastructure'])
+dc_resource('redpanda', labels=['infrastructure'])
+dc_resource('minio', labels=['infrastructure'])
+dc_resource('db-seed', labels=['infrastructure'], resource_deps=['egov-mdms-service'])
+
+# --- DIGIT Core ---
+for svc in ['egov-mdms-service', 'egov-enc-service', 'egov-idgen', 'egov-user',
+            'egov-workflow-v2', 'egov-localization', 'boundary-service',
+            'egov-accesscontrol', 'egov-persister', 'egov-filestore', 'egov-url-shortening']:
+    dc_resource(svc, labels=['core'], resource_deps=['pgbouncer', 'redpanda'])
+
+# --- HCM Services ---
+for svc in ['health-project', 'household', 'health-individual', 'facility', 'product',
+            'stock', 'referralmanagement', 'plan-service', 'census-service',
+            'excel-ingestion', 'transformer', 'resource-generator', 'beneficiary-idgen',
+            'health-hrms', 'health-pgr-services', 'health-service-request',
+            'egov-survey-services', 'dashboard-analytics', 'project-factory',
+            'boundary-management', 'auth-proxy']:
+    dc_resource(svc, labels=['hcm'])
+
+# --- Gateway ---
+dc_resource('kong', labels=['gateway'],
+    links=[link('http://localhost:18000', 'API Gateway')])

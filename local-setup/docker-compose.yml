@@ -1,0 +1,1119 @@
+# ============================================================
+# HCM Local Setup - Docker Compose
+# ============================================================
+
+x-common-env: &common-env
+  SPRING_DATASOURCE_URL: jdbc:postgresql://pgbouncer:5432/egov
+  SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+  SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  SPRING_REDIS_HOST: redis
+  SPRING_REDIS_PORT: 6379
+  SPRING_FLYWAY_ENABLED: "true"
+  OTEL_TRACES_EXPORTER: none
+  JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m
+
+x-hcm-env: &hcm-env
+  <<: *common-env
+  EGOV_MDMS_HOST: http://egov-mdms-service:8094
+  EGOV_USER_HOST: http://egov-user:8080
+  EGOV_IDGEN_HOST: http://egov-idgen:8080
+  EGOV_WORKFLOW_HOST: http://egov-workflow-v2:8080
+  EGOV_LOCALIZATION_HOST: http://egov-localization:8080
+  EGOV_BOUNDARY_HOST: http://boundary-service:8080
+  EGOV_ENC_HOST: http://egov-enc-service:8080
+  EGOV_FILESTORE_HOST: http://egov-filestore:8080
+  EGOV_HRMS_HOST: http://health-hrms:8080
+  EGOV_URL_SHORTENING_HOST: http://egov-url-shortening:8080
+  EGOV_PROJECT_HOST: http://health-project:8080
+  EGOV_HOUSEHOLD_HOST: http://household:8080
+  EGOV_INDIVIDUAL_HOST: http://health-individual:8080
+  EGOV_FACILITY_HOST: http://facility:8080
+  EGOV_PRODUCT_HOST: http://product:8080
+  EGOV_STOCK_HOST: http://stock:8080
+  EGOV_PLAN_SERVICE_HOST: http://plan-service:8080
+  EGOV_CENSUS_HOST: http://census-service:8080
+  EGOV_PROJECT_FACTORY_HOST: http://project-factory:8080
+  EGOV_EXCEL_INGESTION_HOST: http://excel-ingestion:8080
+  BENEFICIARY_IDGEN_HOST: http://beneficiary-idgen:8088
+
+services:
+  # ============================================================
+  # Infrastructure Services
+  # ============================================================
+
+  postgres-db:
+    image: ${POSTGRES_IMAGE}
+    container_name: hcm-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: egov
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    networks:
+      - egov-network
+
+  pgbouncer:
+    image: ${PGBOUNCER_IMAGE}
+    container_name: hcm-pgbouncer
+    environment:
+      DB_HOST: postgres-db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: egov
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 500
+      DEFAULT_POOL_SIZE: 20
+      MIN_POOL_SIZE: 5
+      RESERVE_POOL_SIZE: 5
+      AUTH_TYPE: scram-sha-256
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "5432", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      egov-network:
+        aliases:
+          - postgres
+
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: hcm-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - egov-network
+
+  redpanda:
+    image: ${REDPANDA_IMAGE}
+    container_name: hcm-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --memory
+      - 256M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+      - --pandaproxy-addr
+      - PLAINTEXT://0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - PLAINTEXT://redpanda:8082
+    ports:
+      - "${REDPANDA_PORT}:9092"
+      - "18082:8082"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    networks:
+      egov-network:
+        aliases:
+          - kafka
+          - kafka-v2.kafka-cluster
+
+  minio:
+    image: ${MINIO_IMAGE}
+    container_name: hcm-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  # ============================================================
+  # DB Seed
+  # ============================================================
+
+  db-seed:
+    build: ./docker/db-seed
+    container_name: hcm-db-seed
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres-db
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: egov
+    volumes:
+      - ./db:/seeds:ro
+    restart: "no"
+    networks:
+      - egov-network
+
+  # ============================================================
+  # DIGIT Core Services
+  # ============================================================
+
+  egov-mdms-service:
+    image: ${MDMS_IMAGE}
+    container_name: hcm-mdms
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8094
+      SPRING_FLYWAY_TABLE: flyway_schema_history_mdms
+      EGOV_MDMS_SCHEMA_HOST: ${EGOV_MDMS_SCHEMA_HOST:-http://egov-mdms-service:8094}
+      EGOV_MDMS_SCHEMA_PATH: ${EGOV_MDMS_SCHEMA_PATH:-/mdms-v2/schema/v1/_search}
+      MASTER_PASSWORD: apassword
+      MASTER_SALT: asalt
+      MASTER_INITIALVECTOR: aiv
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8094/mdms-v2/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - egov-network
+
+  egov-enc-service:
+    image: ${ENC_IMAGE}
+    container_name: hcm-enc
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_enc
+      MASTER_PASSWORD: apassword
+      MASTER_SALT: asalt
+      MASTER_INITIALVECTOR: aiv
+      MASTER_PASSWORD_PROVIDER: software
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/egov-enc-service/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-idgen:
+    image: ${IDGEN_IMAGE}
+    container_name: hcm-idgen
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_idgen
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      AUTOCREATE_NEW_SEQ: "true"
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/egov-idgen/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-user:
+    image: ${USER_IMAGE}
+    container_name: hcm-user
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_user
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      EGOV_OTP_HOST: http://egov-user:8080
+      EGOV_ENC_HOST: http://egov-enc-service:8080
+      EGOV_IDGEN_HOST: http://egov-idgen:8080
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/user/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - egov-network
+
+  egov-workflow-v2:
+    image: ${WORKFLOW_IMAGE}
+    container_name: hcm-workflow
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_workflow
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      EGOV_USER_HOST: http://egov-user:8080
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/egov-workflow-v2/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-localization:
+    image: ${LOCALIZATION_IMAGE}
+    container_name: hcm-localization
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_localization
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/localization/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - egov-network
+
+  boundary-service:
+    image: ${BOUNDARY_IMAGE}
+    container_name: hcm-boundary
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_boundary
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/boundary-service/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-accesscontrol:
+    image: ${ACCESSCONTROL_IMAGE}
+    container_name: hcm-accesscontrol
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_accesscontrol
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/access/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-persister:
+    image: ${PERSISTER_IMAGE}
+    container_name: hcm-persister
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_persister
+      EGOV_PERSISTER_FILE_PATH: "file:///persister-config/"
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    volumes:
+      - ./configs/persister:/persister-config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/common-persist/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-filestore:
+    image: ${FILESTORE_IMAGE}
+    container_name: hcm-filestore
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_filestore
+      MINIO_URL: http://minio:9000
+      AWS_KEY: minioadmin
+      AWS_SECRETKEY: minioadmin
+      FIXED_BUCKETID: egov-filestore
+      EGOV_MDMS_HOST: http://egov-mdms-service:8094
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/filestore/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-url-shortening:
+    image: ${URL_SHORTENING_IMAGE}
+    container_name: hcm-url-shortening
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_url_shortening
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx96m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - egov-network
+
+  # ============================================================
+  # HCM Java Services
+  # ============================================================
+
+  health-project:
+    image: ${PROJECT_IMAGE}
+    container_name: hcm-project
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_project
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health-project/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    networks:
+      - egov-network
+
+  household:
+    image: ${HOUSEHOLD_IMAGE}
+    container_name: hcm-household
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_household
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/household/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  health-individual:
+    image: ${INDIVIDUAL_IMAGE}
+    container_name: hcm-individual
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_individual
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health-individual/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  facility:
+    image: ${FACILITY_IMAGE}
+    container_name: hcm-facility
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_facility
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/facility/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  product:
+    image: ${PRODUCT_IMAGE}
+    container_name: hcm-product
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_product
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/product/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  stock:
+    image: ${STOCK_IMAGE}
+    container_name: hcm-stock
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_stock
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/stock/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  referralmanagement:
+    image: ${REFERRAL_IMAGE}
+    container_name: hcm-referral
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_referral
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/referralmanagement/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  plan-service:
+    image: ${PLAN_SERVICE_IMAGE}
+    container_name: hcm-plan-service
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_plan
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/plan-service/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  census-service:
+    image: ${CENSUS_SERVICE_IMAGE}
+    container_name: hcm-census-service
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_census
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/census-service/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  excel-ingestion:
+    image: ${EXCEL_INGESTION_IMAGE}
+    container_name: hcm-excel-ingestion
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_excel_ingestion
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/excel-ingestion/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  transformer:
+    image: ${TRANSFORMER_IMAGE}
+    container_name: hcm-transformer
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_transformer
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/transformer/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  resource-generator:
+    image: ${RESOURCE_GENERATOR_IMAGE}
+    container_name: hcm-resource-generator
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8083
+      SPRING_FLYWAY_TABLE: flyway_schema_history_resource_generator
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/resource-generator/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  beneficiary-idgen:
+    image: ${BENEFICIARY_IDGEN_IMAGE}
+    container_name: hcm-beneficiary-idgen
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8088
+      SPRING_FLYWAY_TABLE: flyway_schema_history_beneficiary_idgen
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/beneficiary-idgen/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  health-hrms:
+    image: ${HEALTH_HRMS_IMAGE}
+    container_name: hcm-hrms
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_hrms
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health-hrms/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  health-pgr-services:
+    image: ${HEALTH_PGR_IMAGE}
+    container_name: hcm-pgr
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_pgr
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/pgr-services/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  health-service-request:
+    image: ${HEALTH_SERVICE_REQUEST_IMAGE}
+    container_name: hcm-service-request
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_service_request
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/service-request/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  egov-survey-services:
+    image: ${SURVEY_SERVICES_IMAGE}
+    container_name: hcm-survey
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_survey
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/egov-survey-services/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  dashboard-analytics:
+    image: ${DASHBOARD_ANALYTICS_IMAGE}
+    container_name: hcm-dashboard-analytics
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      <<: *hcm-env
+      SERVER_PORT: 8080
+      SPRING_FLYWAY_TABLE: flyway_schema_history_dashboard_analytics
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/dashboard-analytics/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+  # ============================================================
+  # HCM Node.js Services
+  # ============================================================
+
+  project-factory:
+    image: ${PROJECT_FACTORY_IMAGE}
+    container_name: hcm-project-factory
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      EGOV_HOST: http://kong:8000
+      DB_HOST: pgbouncer
+      DB_PORT: 5432
+      DB_NAME: egov
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_SCHEMA: egov
+      KAFKA_BROKER_HOST: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      BASE_SECRET: hcm-local-secret
+      DEFAULT_TENANT_ID: mz
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/project-factory/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - egov-network
+
+  boundary-management:
+    image: ${BOUNDARY_MANAGEMENT_IMAGE}
+    container_name: hcm-boundary-management
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      EGOV_HOST: http://kong:8000
+      DB_HOST: pgbouncer
+      DB_PORT: 5432
+      DB_NAME: egov
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KAFKA_BROKER_HOST: redpanda:9092
+      REDIS_HOST: redis
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/boundary-management/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    networks:
+      - egov-network
+
+  auth-proxy:
+    image: ${AUTH_PROXY_IMAGE}
+    container_name: hcm-auth-proxy
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8085
+      EGOV_USER_HOST: "http://egov-user:8080/"
+      KIBANA_HOST: "http://localhost:5601/"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - egov-network
+
+  # ============================================================
+  # Kong API Gateway
+  # ============================================================
+
+  kong:
+    image: ${KONG_IMAGE}
+    container_name: hcm-kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "${KONG_PROXY_PORT}:8000"
+      - "${KONG_ADMIN_PORT}:8001"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - egov-network
+
+networks:
+  egov-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  redpanda_data:

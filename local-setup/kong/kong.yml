@@ -1,0 +1,345 @@
+_format_version: "3.0"
+
+consumers:
+- username: hcm-dev
+  keyauth_credentials:
+  - key: hcm-dev-api-key-change-me
+  tags: [development]
+
+plugins:
+- name: cors
+  config:
+    origins: ['*']
+    methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+    headers:
+    - Accept
+    - Authorization
+    - X-API-Key
+    - auth-token
+    - Content-Type
+    - Content-Disposition
+    - tenantId
+    credentials: true
+    max_age: 3600
+
+- name: request-size-limiting
+  config:
+    allowed_payload_size: 10
+    size_unit: megabytes
+
+services:
+
+# ==================== DIGIT Core Services ====================
+
+- name: mdms-service
+  url: http://egov-mdms-service:8094
+  tags: [core]
+  routes:
+  - name: mdms-route
+    paths: [/mdms-v2]
+    strip_path: false
+
+- name: user-service
+  url: http://egov-user:8080
+  tags: [core]
+  routes:
+  - name: user-route
+    paths: [/user]
+    strip_path: false
+
+- name: enc-service
+  url: http://egov-enc-service:8080
+  tags: [core]
+  routes:
+  - name: enc-route
+    paths: [/egov-enc-service]
+    strip_path: false
+
+- name: idgen-service
+  url: http://egov-idgen:8080
+  tags: [core]
+  routes:
+  - name: idgen-route
+    paths: [/egov-idgen]
+    strip_path: false
+
+- name: workflow-service
+  url: http://egov-workflow-v2:8080
+  tags: [core]
+  routes:
+  - name: workflow-route
+    paths: [/egov-workflow-v2]
+    strip_path: false
+
+- name: localization-service
+  url: http://egov-localization:8080
+  tags: [core]
+  routes:
+  - name: localization-route
+    paths: [/localization]
+    strip_path: false
+
+- name: boundary-service
+  url: http://boundary-service:8080
+  tags: [core]
+  routes:
+  - name: boundary-route
+    paths: [/boundary-service]
+    strip_path: false
+
+- name: accesscontrol-service
+  url: http://egov-accesscontrol:8080
+  tags: [core]
+  routes:
+  - name: accesscontrol-route
+    paths: [/access]
+    strip_path: false
+
+- name: persister-service
+  url: http://egov-persister:8080
+  tags: [core]
+  routes:
+  - name: persister-route
+    paths: [/common-persist]
+    strip_path: false
+
+- name: filestore-service
+  url: http://egov-filestore:8080
+  tags: [core]
+  routes:
+  - name: filestore-route
+    paths: [/filestore]
+    strip_path: false
+
+- name: url-shortening-service
+  url: http://egov-url-shortening:8080
+  tags: [core]
+  routes:
+  - name: url-shortening-route
+    paths: [/egov-url-shortening]
+    strip_path: false
+
+# ==================== HCM Health Services ====================
+
+- name: project-service
+  url: http://health-project:8080
+  tags: [hcm]
+  routes:
+  - name: project-route
+    paths: [/health-project]
+    strip_path: false
+
+- name: household-service
+  url: http://household:8080
+  tags: [hcm]
+  routes:
+  - name: household-route
+    paths: [/household]
+    strip_path: false
+
+- name: individual-service
+  url: http://health-individual:8080
+  tags: [hcm]
+  routes:
+  - name: individual-route
+    paths: [/health-individual]
+    strip_path: false
+
+- name: facility-service
+  url: http://facility:8080
+  tags: [hcm]
+  routes:
+  - name: facility-route
+    paths: [/facility]
+    strip_path: false
+
+- name: product-service
+  url: http://product:8080
+  tags: [hcm]
+  routes:
+  - name: product-route
+    paths: [/product]
+    strip_path: false
+
+- name: stock-service
+  url: http://stock:8080
+  tags: [hcm]
+  routes:
+  - name: stock-route
+    paths: [/stock]
+    strip_path: false
+
+- name: referralmanagement-service
+  url: http://referralmanagement:8080
+  tags: [hcm]
+  routes:
+  - name: referralmanagement-route
+    paths: [/referralmanagement]
+    strip_path: false
+
+- name: plan-service
+  url: http://plan-service:8080
+  tags: [hcm]
+  routes:
+  - name: plan-route
+    paths: [/plan-service]
+    strip_path: false
+
+- name: census-service
+  url: http://census-service:8080
+  tags: [hcm]
+  routes:
+  - name: census-route
+    paths: [/census-service]
+    strip_path: false
+
+- name: excel-ingestion-service
+  url: http://excel-ingestion:8080
+  tags: [hcm]
+  routes:
+  - name: excel-ingestion-route
+    paths: [/excel-ingestion]
+    strip_path: false
+
+- name: transformer-service
+  url: http://transformer:8080
+  tags: [hcm]
+  routes:
+  - name: transformer-route
+    paths: [/transformer]
+    strip_path: false
+
+- name: resource-generator-service
+  url: http://resource-generator:8083
+  tags: [hcm]
+  routes:
+  - name: resource-generator-route
+    paths: [/resource-generator]
+    strip_path: false
+
+- name: beneficiary-idgen-service
+  url: http://beneficiary-idgen:8088
+  tags: [hcm]
+  routes:
+  - name: beneficiary-idgen-route
+    paths: [/beneficiary-idgen]
+    strip_path: false
+
+# ==================== HCM Core Services ====================
+
+- name: health-hrms-service
+  url: http://health-hrms:8080
+  tags: [hcm]
+  routes:
+  - name: health-hrms-route
+    paths: [/health-hrms]
+    strip_path: false
+  - name: egov-hrms-route
+    paths: [/egov-hrms]
+    strip_path: false
+
+- name: health-pgr-service
+  url: http://health-pgr-services:8080
+  tags: [hcm]
+  routes:
+  - name: health-pgr-route
+    paths: [/pgr-services]
+    strip_path: false
+
+- name: health-service-request
+  url: http://health-service-request:8080
+  tags: [hcm]
+  routes:
+  - name: service-request-route
+    paths: [/service-request]
+    strip_path: false
+
+- name: project-factory-service
+  url: http://project-factory:8080
+  tags: [hcm]
+  routes:
+  - name: project-factory-route
+    paths: [/project-factory]
+    strip_path: false
+
+- name: boundary-management-service
+  url: http://boundary-management:8080
+  tags: [hcm]
+  routes:
+  - name: boundary-management-route
+    paths: [/boundary-management]
+    strip_path: false
+
+- name: dashboard-analytics-service
+  url: http://dashboard-analytics:8080
+  tags: [hcm]
+  routes:
+  - name: dashboard-analytics-route
+    paths: [/dashboard-analytics]
+    strip_path: false
+
+- name: survey-services
+  url: http://egov-survey-services:8080
+  tags: [hcm]
+  routes:
+  - name: survey-route
+    paths: [/egov-survey-services]
+    strip_path: false
+
+- name: auth-proxy-service
+  url: http://auth-proxy:8085
+  tags: [hcm]
+  routes:
+  - name: auth-proxy-route
+    paths: [/auth-proxy]
+    strip_path: false
+
+# ==================== Health Check Routes ====================
+
+- name: health-mdms
+  url: http://egov-mdms-service:8094
+  routes:
+  - name: health-mdms-route
+    paths: [/health/mdms]
+    strip_path: true
+  plugins:
+  - name: request-transformer
+    config:
+      replace:
+        uri: /mdms-v2/health
+
+- name: health-user
+  url: http://egov-user:8080
+  routes:
+  - name: health-user-route
+    paths: [/health/user]
+    strip_path: true
+  plugins:
+  - name: request-transformer
+    config:
+      replace:
+        uri: /user/health
+
+- name: health-workflow
+  url: http://egov-workflow-v2:8080
+  routes:
+  - name: health-workflow-route
+    paths: [/health/workflow]
+    strip_path: true
+  plugins:
+  - name: request-transformer
+    config:
+      replace:
+        uri: /egov-workflow-v2/health
+
+- name: health-project-check
+  url: http://health-project:8080
+  routes:
+  - name: health-project-health-route
+    paths: [/health/project]
+    strip_path: true
+  plugins:
+  - name: request-transformer
+    config:
+      replace:
+        uri: /health-project/health

@@ -1,0 +1,12 @@
+# Runtime
+.tilt-dev/
+*.pyc
+__pycache__/
+
+# Docker volumes (managed by compose)
+postgres_data/
+minio_data/
+redpanda_data/
+
+# OS
+.DS_Store
